@@ -40,6 +40,13 @@
                 {#- Convert reasoning / reasoning_content to a leading thinking chunk. #}
                 {%- set reasoning = msg.get('reasoning_content', msg.get('reasoning', none)) %}
                 {%- if reasoning is not none and reasoning != '' %}
+                    {%- if msg['content'] is not none and msg['content'] is not string %}
+                        {%- for block in msg['content'] %}
+                            {%- if block['type'] == 'thinking' %}
+                                {{- raise_exception('Message cannot have both thinking chunks in content and a top-level `reasoning` or `reasoning_content` field.') }}
+                            {%- endif %}
+                        {%- endfor %}
+                    {%- endif %}
                     {%- set think_chunk = {'type': 'thinking', 'thinking': reasoning} %}
                     {%- if msg['content'] is string and msg['content'] != '' %}
                         {%- set new_content = [think_chunk, {'type': 'text', 'text': msg['content']}] %}

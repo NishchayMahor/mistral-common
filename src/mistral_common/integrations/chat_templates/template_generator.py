@@ -385,6 +385,9 @@ def _generate_reasoning_to_thinking_inline() -> list[str]:
 
     `reasoning_content` takes precedence over `reasoning` when both are present.
 
+    Raises at template render time if the message already contains thinking chunks
+    in its content alongside a `reasoning` or `reasoning_content` field.
+
     Returns:
         Lines of Jinja2 template code for the inline conversion.
     """
@@ -392,6 +395,13 @@ def _generate_reasoning_to_thinking_inline() -> list[str]:
         "                {#- Convert reasoning / reasoning_content to a leading thinking chunk. #}",
         "                {%- set reasoning = msg.get('reasoning_content', msg.get('reasoning', none)) %}",
         "                {%- if reasoning is not none and reasoning != '' %}",
+        "                    {%- if msg['content'] is not none and msg['content'] is not string %}",
+        "                        {%- for block in msg['content'] %}",
+        "                            {%- if block['type'] == 'thinking' %}",
+        "                                {{- raise_exception('Message cannot have both thinking chunks in content and a top-level `reasoning` or `reasoning_content` field.') }}",  # noqa: E501
+        "                            {%- endif %}",
+        "                        {%- endfor %}",
+        "                    {%- endif %}",
         "                    {%- set think_chunk = {'type': 'thinking', 'thinking': reasoning} %}",
         "                    {%- if msg['content'] is string and msg['content'] != '' %}",
         "                        {%- set new_content = [think_chunk, {'type': 'text', 'text': msg['content']}] %}",

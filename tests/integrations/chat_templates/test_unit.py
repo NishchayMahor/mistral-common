@@ -583,7 +583,7 @@ def test_reasoning_content_takes_precedence_over_reasoning(version: TokenizerVer
 
 @pytest.mark.parametrize(("version", "image", "audio"), THINK_CONFIGS)
 def test_reasoning_with_existing_think_chunks(version: TokenizerVersion, image: bool, audio: bool) -> None:
-    r"""`reasoning_content` is prepended before existing inline `ThinkChunk`\s."""
+    r"""Template raises when both thinking chunks and reasoning_content are present."""
     template = generate_chat_template(
         spm=False,
         tokenizer_version=version,
@@ -604,8 +604,12 @@ def test_reasoning_with_existing_think_chunks(version: TokenizerVersion, image: 
         },
     ]
 
-    output = render_template(template, messages)
-    assert "[THINK]Top-level reasoning[/THINK][THINK]Inline thinking[/THINK]Hello!" in output
+    with pytest.raises(
+        ValueError,
+        match="Message cannot have both thinking chunks in content and a top-level"
+        " `reasoning` or `reasoning_content` field",
+    ):
+        render_template(template, messages)
 
 
 @pytest.mark.parametrize(("version", "image", "audio"), THINK_CONFIGS)
@@ -1426,3 +1430,488 @@ def test_use_token_variables_default_is_true() -> None:
     """Default use_token_variables is True."""
     config = TemplateConfig(version=TokenizerVersion.v7)
     assert config.use_token_variables is True
+
+
+# ── Task 2: V11 [CALL_ID] format test ──────────────────────────────────
+
+
+def test_v11_tool_call_uses_call_id_token() -> None:
+    r"""v11 template emits [CALL_ID] token in tool call output."""
+    template = generate_chat_template(
+        spm=False,
+        tokenizer_version=TokenizerVersion.v11,
+        image_support=False,
+        audio_support=False,
+        thinking_support=False,
+    )
+
+    messages: list[dict[str, Any]] = [
+        {"role": "user", "content": "Weather?"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "abc123def",
+                    "type": "function",
+                    "function": {"name": "get_weather", "arguments": '{"city": "Paris"}'},
+                }
+            ],
+        },
+        {"role": "tool", "content": "Sunny", "tool_call_id": "abc123def"},
+        {"role": "assistant", "content": "Sunny in Paris."},
+    ]
+
+    output = render_template(
+        template,
+        messages,
+        tools=[
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_weather",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"city": {"type": "string"}},
+                    },
+                },
+            }
+        ],
+    )
+    assert "[TOOL_CALLS]get_weather[CALL_ID]abc123def[ARGS]" in output
+    assert '"city": "Paris"' in output
+
+
+# ── Task 3: call_id field alias test ────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("version", "spm"),
+    [
+        (TokenizerVersion.v3, False),
+        (TokenizerVersion.v7, False),
+        (TokenizerVersion.v11, False),
+    ],
+)
+def test_tool_result_call_id_alias(version: TokenizerVersion, spm: bool) -> None:
+    r"""Tool results accept `call_id` as an alias for `tool_call_id`."""
+    template = generate_chat_template(
+        spm=spm,
+        tokenizer_version=version,
+        image_support=False,
+        audio_support=False,
+        thinking_support=False,
+    )
+
+    messages: list[dict[str, Any]] = [
+        {"role": "user", "content": "Add 2+2"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "abc123def",
+                    "type": "function",
+                    "function": {"name": "add", "arguments": '{"a": 2, "b": 2}'},
+                }
+            ],
+        },
+        {"role": "tool", "content": "4", "call_id": "abc123def", "name": "add"},
+        {"role": "assistant", "content": "4"},
+    ]
+
+    output = render_template(
+        template,
+        messages,
+        tools=[
+            {
+                "type": "function",
+                "function": {
+                    "name": "add",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "a": {"type": "integer"},
+                            "b": {"type": "integer"},
+                        },
+                    },
+                },
+            }
+        ],
+    )
+    assert "abc123def" in output
+    assert "[TOOL_RESULTS]" in output
+
+
+# ── Task 4: Empty string arguments test ─────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("version", "spm"),
+    [
+        (TokenizerVersion.v7, False),
+        (TokenizerVersion.v13, False),
+        (TokenizerVersion.v15, False),
+    ],
+)
+def test_tool_call_empty_string_arguments_defaults_to_empty_object(version: TokenizerVersion, spm: bool) -> None:
+    r"""Empty string arguments in tool calls default to '{}'."""
+    template = generate_chat_template(
+        spm=spm,
+        tokenizer_version=version,
+        image_support=False,
+        audio_support=False,
+        thinking_support=False,
+    )
+
+    messages: list[dict[str, Any]] = [
+        {"role": "user", "content": "Hello"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "abc123def",
+                    "type": "function",
+                    "function": {"name": "greet", "arguments": ""},
+                }
+            ],
+        },
+        {"role": "tool", "content": "hi", "tool_call_id": "abc123def", "name": "greet"},
+        {"role": "assistant", "content": "Done"},
+    ]
+
+    output = render_template(
+        template,
+        messages,
+        tools=[{"type": "function", "function": {"name": "greet", "parameters": {}}}],
+    )
+    assert "{}" in output
+    assert "greet" in output
+
+
+# ── Task 5: Numeric tool result parsing on v2 ───────────────────────────
+
+
+class TestV2ToolResultNumericParsing:
+    """Tests for v2 tool result numeric parsing edge cases."""
+
+    @pytest.fixture()
+    def v2_template(self) -> str:
+        return generate_chat_template(
+            spm=False,
+            tokenizer_version=TokenizerVersion.v2,
+            image_support=False,
+            audio_support=False,
+            thinking_support=False,
+        )
+
+    def test_numeric_int_tool_result(self, v2_template: str) -> None:
+        r"""v2 template parses integer tool results as int (not string)."""
+        messages: list[dict[str, Any]] = [
+            {"role": "user", "content": "What is 2+2?"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "abc123def",
+                        "type": "function",
+                        "function": {"name": "add", "arguments": '{"a": 2, "b": 2}'},
+                    }
+                ],
+            },
+            {"role": "tool", "content": "4", "name": "add"},
+            {"role": "assistant", "content": "4"},
+        ]
+
+        output = render_template(
+            v2_template,
+            messages,
+            tools=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "add",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "a": {"type": "integer"},
+                                "b": {"type": "integer"},
+                            },
+                        },
+                    },
+                }
+            ],
+        )
+        # v2 format: [TOOL_RESULTS]{"name": "add", "content": 4}[/TOOL_RESULTS]
+        # Content should be numeric 4, not string "4"
+        assert '"content": 4' in output
+
+    def test_numeric_float_tool_result(self, v2_template: str) -> None:
+        r"""v2 template parses float tool results as float (not string)."""
+        messages: list[dict[str, Any]] = [
+            {"role": "user", "content": "What is pi?"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "abc123def",
+                        "type": "function",
+                        "function": {"name": "pi", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "tool", "content": "3.14", "name": "pi"},
+            {"role": "assistant", "content": "Pi is 3.14"},
+        ]
+
+        output = render_template(
+            v2_template,
+            messages,
+            tools=[{"type": "function", "function": {"name": "pi", "parameters": {}}}],
+        )
+        assert '"content": 3.14' in output
+
+
+# ── Task 6: User empty content renders as empty user turn ────────────────
+
+
+@pytest.mark.parametrize("version", [TokenizerVersion.v3, TokenizerVersion.v7, TokenizerVersion.v15])
+def test_user_empty_content_renders_empty_turn(version: TokenizerVersion) -> None:
+    r"""User message with empty list or None content renders an empty user turn.
+
+    The preprocessing step normalises ``[]`` and ``None`` content to empty
+    strings before the main template loop, so no error is raised.
+    """
+    template = generate_chat_template(
+        spm=False,
+        tokenizer_version=version,
+        image_support=False,
+        audio_support=False,
+        thinking_support=False,
+    )
+
+    for content in [[], None]:
+        messages: list[dict[str, Any]] = [
+            {"role": "user", "content": content},
+        ]
+
+        output = render_template(template, messages)
+        # Should render without raising; the user turn has no text between [INST]...[/INST]
+        assert "[INST]" in output
+        assert "[/INST]" in output
+
+
+# ── Task 7: v7+ assistant empty content + no tool_calls error test ───────
+
+
+@pytest.mark.parametrize("version", [TokenizerVersion.v7, TokenizerVersion.v13, TokenizerVersion.v15])
+def test_assistant_empty_content_no_tool_calls_raises(version: TokenizerVersion) -> None:
+    r"""Assistant message with empty content and no tool_calls raises an error (v7+)."""
+    template = generate_chat_template(
+        spm=False,
+        tokenizer_version=version,
+        image_support=False,
+        audio_support=False,
+        thinking_support=False,
+    )
+
+    messages: list[dict[str, Any]] = [
+        {"role": "user", "content": "Hello"},
+        {"role": "assistant", "content": ""},
+    ]
+
+    with pytest.raises(
+        ValueError,
+        match="Assistant message must have a string or a list of chunks in content or a list of tool calls",
+    ):
+        render_template(template, messages)
+
+
+# ── Task 8: v2 tool message missing name test ────────────────────────────
+
+
+def test_v2_tool_message_missing_name_raises() -> None:
+    r"""v2 template raises when tool message has no `name` field."""
+    template = generate_chat_template(
+        spm=False,
+        tokenizer_version=TokenizerVersion.v2,
+        image_support=False,
+        audio_support=False,
+        thinking_support=False,
+    )
+
+    messages: list[dict[str, Any]] = [
+        {"role": "user", "content": "Add 2+2"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "abc123def",
+                    "type": "function",
+                    "function": {"name": "add", "arguments": '{"a": 2, "b": 2}'},
+                }
+            ],
+        },
+        {"role": "tool", "content": "4"},
+        {"role": "assistant", "content": "4"},
+    ]
+
+    with pytest.raises(ValueError, match="Tool message must have a name"):
+        render_template(
+            template,
+            messages,
+            tools=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "add",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "a": {"type": "integer"},
+                                "b": {"type": "integer"},
+                            },
+                        },
+                    },
+                }
+            ],
+        )
+
+
+# ── Task 9: Image block sorting behavior tests ──────────────────────────
+
+
+def test_image_two_blocks_sorted_by_type() -> None:
+    r"""With exactly 2 content blocks, image sorts before text (pre-v13)."""
+    template = generate_chat_template(
+        spm=False,
+        tokenizer_version=TokenizerVersion.v7,
+        image_support=True,
+        audio_support=False,
+        thinking_support=False,
+    )
+
+    # Text first, then image — should be sorted so image appears before text
+    messages: list[dict[str, Any]] = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "What is this?"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUg=="}},
+            ],
+        },
+        {"role": "assistant", "content": "An image."},
+    ]
+
+    output = render_template(template, messages)
+    # [IMG] should appear before "What is this?"
+    img_pos = output.find("[IMG]")
+    text_pos = output.find("What is this?")
+    assert img_pos != -1
+    assert text_pos != -1
+    assert img_pos < text_pos, "Image token should appear before text in 2-block content"
+
+
+def test_v13_image_more_than_two_blocks_preserves_order() -> None:
+    r"""v13 with image support only sorts exactly 2-block content; 3+ blocks keep original order."""
+    template = generate_chat_template(
+        spm=False,
+        tokenizer_version=TokenizerVersion.v13,
+        image_support=True,
+        audio_support=False,
+        thinking_support=False,
+    )
+
+    # Three blocks: text, image, text — NOT sorted (only 2-block content is sorted)
+    messages: list[dict[str, Any]] = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "First"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUg=="}},
+                {"type": "text", "text": "Second"},
+            ],
+        },
+        {"role": "assistant", "content": "Described."},
+    ]
+
+    output = render_template(template, messages)
+    first_pos = output.find("First")
+    img_pos = output.find("[IMG]")
+    second_pos = output.find("Second")
+    assert first_pos != -1
+    assert img_pos != -1
+    assert second_pos != -1
+    assert first_pos < img_pos < second_pos, "With 3+ blocks and image_support, original order is preserved"
+
+
+# ── Task 10: reasoning field + thinking chunks raises test ───────────────
+
+
+@pytest.mark.parametrize(("version", "image", "audio"), THINK_CONFIGS)
+def test_reasoning_field_with_existing_think_chunks_raises(version: TokenizerVersion, image: bool, audio: bool) -> None:
+    r"""Template raises when both thinking chunks and `reasoning` field are present."""
+    template = generate_chat_template(
+        spm=False,
+        tokenizer_version=version,
+        image_support=image,
+        audio_support=audio,
+        thinking_support=True,
+    )
+
+    messages: list[dict[str, Any]] = [
+        {"role": "user", "content": "Hi"},
+        {
+            "role": "assistant",
+            "reasoning": "Top-level reasoning via reasoning field",
+            "content": [
+                {"type": "thinking", "thinking": "Inline thinking"},
+                {"type": "text", "text": "Hello!"},
+            ],
+        },
+    ]
+
+    with pytest.raises(
+        ValueError,
+        match="Message cannot have both thinking chunks in content and a top-level"
+        " `reasoning` or `reasoning_content` field",
+    ):
+        render_template(template, messages)
+
+
+# ── Task 11: Plain thinking + reasoning mutual exclusion test ────────────
+
+
+def test_plain_think_reasoning_with_existing_think_chunks_raises() -> None:
+    r"""Plain-think template also raises on thinking chunks + reasoning_content."""
+    template = generate_chat_template(
+        spm=False,
+        tokenizer_version=TokenizerVersion.v11,
+        image_support=False,
+        audio_support=False,
+        thinking_support=False,
+        plain_thinking_support=True,
+    )
+
+    messages: list[dict[str, Any]] = [
+        {"role": "user", "content": "Hi"},
+        {
+            "role": "assistant",
+            "reasoning_content": "Top-level reasoning",
+            "content": [
+                {"type": "thinking", "thinking": "Inline thinking"},
+                {"type": "text", "text": "Hello!"},
+            ],
+        },
+    ]
+
+    with pytest.raises(
+        ValueError,
+        match="Message cannot have both thinking chunks in content and a top-level"
+        " `reasoning` or `reasoning_content` field",
+    ):
+        render_template(template, messages)
