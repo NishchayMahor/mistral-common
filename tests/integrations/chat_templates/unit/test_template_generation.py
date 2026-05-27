@@ -49,7 +49,7 @@ class TestGenerateChatTemplateAPI:
     def test_empty_messages_raises(self) -> None:
         config = TemplateConfig(version=TokenizerVersion.v15)
         template = build_chat_template(config)
-        with pytest.raises(Exception):
+        with pytest.raises(Exception, match="list object has no element 0"):
             render_template(template, messages=[])
 
     def test_double_quotes_in_default_system_prompt(self) -> None:
