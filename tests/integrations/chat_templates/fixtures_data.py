@@ -20,9 +20,6 @@ from mistral_common.protocol.instruct.validator import ValidationMode
 from mistral_common.tokens.tokenizers.base import TokenizerVersion
 from tests.integrations.chat_templates.conftest import _AUDIO, _AUDIO_URL, _IMAGE, _IMAGE_URL
 
-SPM_SPECIAL_WHITESPACE = "▁"
-SPM_WHITESPACE = "▁"
-
 # -- Request fixtures --
 
 REQUEST_ONE_TURN_TEST = ChatCompletionRequest(
