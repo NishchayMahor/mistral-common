@@ -109,7 +109,8 @@ class TestMessageContentValidation:
             thinking_support=False,
         )
 
-        for content in [[], None]:
+        content: list[Any] | None
+        for content in ([], None):
             messages: list[dict[str, Any]] = [
                 {"role": "user", "content": content},
             ]
