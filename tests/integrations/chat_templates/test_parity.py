@@ -1,7 +1,3 @@
-"""Layer 1: Verify dynamically generated templates match static golden files."""
-
-from __future__ import annotations
-
 from typing import Any
 
 import pytest
@@ -25,7 +21,6 @@ from tests.integrations.chat_templates.conftest import (
 def test_dynamic_matches_static(
     version: TokenizerVersion, spm: bool, image: bool, audio: bool, think: bool, plain_think: bool
 ) -> None:
-    """Generated template must exactly match the static golden file."""
     config = _make_config((version, spm, image, audio, think, plain_think))
     dynamic = build_chat_template(config)
     static = _load_golden_template(config)
@@ -45,7 +40,6 @@ def test_dynamic_template_produces_same_output(
     think: bool,
     plain_think: bool,
 ) -> None:
-    """Verify dynamically generated templates produce same output as static templates."""
     config = _make_config((version, spm, image, audio, think, plain_think))
     static_template = _load_golden_template(config)
     dynamic_template = build_chat_template(config)
@@ -84,7 +78,6 @@ def test_dynamic_template_comprehensive(
     think: bool,
     plain_think: bool,
 ) -> None:
-    """Test dynamically generated templates with comprehensive conversation examples."""
     config = _make_config((version, spm, image, audio, think, plain_think))
     static_template = _load_golden_template(config)
     dynamic_template = build_chat_template(config)
